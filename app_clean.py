@@ -10,7 +10,6 @@ import numpy as np
 
 # Import our processors and categorization
 from smart_document_processor_v2 import SmartDocumentProcessor
-from ai_categorizer import AICategorizer
 
 # Page Configuration
 st.set_page_config(
@@ -849,7 +848,11 @@ def create_sidebar():
 def process_uploaded_files(uploaded_files):
     """Process uploaded files and categorize transactions"""
     processor = SmartDocumentProcessor()
-    categorizer = AICategorizer()
+    
+    # Use CategoryManager for categorization (managed categories)
+    if 'category_manager' not in st.session_state:
+        st.session_state.category_manager = CategoryManager()
+    category_manager = st.session_state.category_manager
     
     all_transactions = []
     processing_results = []
@@ -872,17 +875,46 @@ def process_uploaded_files(uploaded_files):
             if result and 'transactions' in result:
                 transactions = result['transactions']
                 
-                # Categorize transactions
+                # Categorize transactions using CategoryManager
                 transactions_df = pd.DataFrame(transactions)
                 
                 # Ensure required column exists for categorization
                 if 'description' in transactions_df.columns:
-                    transactions_df['Description'] = transactions_df['description']
-                elif 'Description' not in transactions_df.columns:
-                    transactions_df['Description'] = transactions_df.get('desc', transactions_df.get('transaction_description', ''))
+                    description_col = 'description'
+                elif 'Description' in transactions_df.columns:
+                    description_col = 'Description'
+                elif 'desc' in transactions_df.columns:
+                    description_col = 'desc'
+                elif 'transaction_description' in transactions_df.columns:
+                    description_col = 'transaction_description'
+                else:
+                    description_col = transactions_df.columns[0]  # fallback to first column
                 
-                categorized_df = categorizer.categorize_dataframe(transactions_df)
-                categorized_transactions = categorized_df.to_dict('records')
+                # Apply categorization using CategoryManager
+                categorized_rows = []
+                for _, row in transactions_df.iterrows():
+                    row_dict = row.to_dict()
+                    description = str(row_dict.get(description_col, ''))
+                    
+                    # Get categorization from CategoryManager
+                    cat_result = category_manager.categorize_transaction(description)
+                    
+                    # Add categorization fields to transaction
+                    row_dict['category'] = cat_result['category']
+                    row_dict['category_name'] = cat_result['category_name']
+                    row_dict['master_category'] = cat_result['master_category']
+                    row_dict['matched_keyword'] = cat_result['matched_keyword']
+                    row_dict['confidence'] = cat_result['confidence']
+                    row_dict['category_color'] = cat_result['color']
+                    row_dict['category_icon'] = cat_result['icon']
+                    
+                    # Ensure Description column exists for display
+                    if 'Description' not in row_dict:
+                        row_dict['Description'] = description
+                    
+                    categorized_rows.append(row_dict)
+                
+                categorized_transactions = categorized_rows
                 
                 all_transactions.extend(categorized_transactions)
                 
