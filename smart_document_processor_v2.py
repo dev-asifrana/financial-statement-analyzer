@@ -445,114 +445,93 @@ class TangerineProcessor(BankProcessor):
         return bool(re.match(pattern, line))
     
     def _parse_tangerine_multiline_transaction(self, lines: List[str], start_idx: int, page_num: int) -> tuple[Optional[Dict[str, Any]], int]:
-        """Parse Tangerine multi-line transaction format"""
+        """Parse Tangerine - simple and reliable approach"""
         try:
-            current_line = lines[start_idx].strip()
+            # Find a line with date pattern
+            date_line_idx = start_idx
+            current_line = lines[date_line_idx].strip()
             
-            # Check if it's a single-line transaction (like Interest Paid)
-            if self._is_complete_tangerine_transaction(current_line):
-                transaction = self._parse_tangerine_transaction(current_line, page_num)
-                return transaction, 1
+            if not re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', current_line):
+                return None, 1
             
-            # Handle multi-line transactions
-            date_str = None
-            description = None
-            amount = None
-            balance = None
-            lines_consumed = 1
+            # Extract date
+            parts = current_line.split()
+            date_str = f"{parts[0]} {parts[1]} {parts[2]}"
+            date = self._parse_tangerine_date(date_str)
             
-            # First line should contain date
-            if re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', current_line):
-                parts = current_line.split()
-                if len(parts) >= 3:
-                    date_str = f"{parts[0]} {parts[1]} {parts[2]}"
-                    # Check if description is on same line
-                    if len(parts) > 3:
-                        remaining_parts = parts[3:]
-                        # Check if it contains amounts
-                        amounts_in_line = [p for p in remaining_parts if re.match(r'^[\d,]+\.?\d{2}$', p)]
-                        if len(amounts_in_line) >= 2:
-                            # Single line with everything
-                            desc_parts = [p for p in remaining_parts if not re.match(r'^[\d,]+\.?\d{2}$', p)]
-                            description = ' '.join(desc_parts)
-                            amount = self.clean_amount(amounts_in_line[0])
-                            balance = self.clean_amount(amounts_in_line[1])
-                        else:
-                            description = ' '.join(remaining_parts)
+            # Scan the next 5 lines to build complete transaction
+            all_text = []
+            amounts = []
             
-            # Look ahead for description and amounts in next lines
-            idx = start_idx + 1
-            while idx < len(lines) and lines_consumed < 5:  # Max 5 lines per transaction
-                next_line = lines[idx].strip()
-                if not next_line:
-                    idx += 1
-                    lines_consumed += 1
+            for i in range(date_line_idx, min(date_line_idx + 5, len(lines))):
+                line = lines[i].strip()
+                if not line:
                     continue
                 
-                # Stop if we hit another date line
-                if re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', next_line):
+                # Stop if we hit another date (next transaction)
+                if i > date_line_idx and re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', line):
                     break
                 
-                # Look for amounts in this line
-                amounts_in_line = re.findall(r'[\d,]+\.\d{2}', next_line)
-                if len(amounts_in_line) >= 2 and amount is None:
-                    amount = self.clean_amount(amounts_in_line[0])
-                    balance = self.clean_amount(amounts_in_line[1])
-                    lines_consumed += 1
-                    break
-                elif not description and not any(c.isdigit() for c in next_line):
-                    # This line likely contains description
-                    if description:
-                        description += " " + next_line
-                    else:
-                        description = next_line
+                # Collect all text
+                all_text.append(line)
                 
-                idx += 1
-                lines_consumed += 1
+                # Collect all amounts from all lines
+                line_amounts = re.findall(r'[\d,]+\.\d{2}', line)
+                amounts.extend(line_amounts)
             
-            # Also check previous line for description (case where description comes before date)
-            if not description and start_idx > 0:
-                prev_line = lines[start_idx - 1].strip()
-                if prev_line and not re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', prev_line):
-                    description = prev_line
+            # Must have at least 2 amounts (transaction + balance)
+            if len(amounts) < 2:
+                return None, 1
             
-            if date_str and description and amount is not None and balance is not None:
-                date = self._parse_tangerine_date(date_str)
-                
-                # Skip balance entries
-                if any(skip in description.lower() for skip in ['opening balance', 'closing balance']) and amount == 0:
-                    return None, lines_consumed
-                
-                # Classify transaction
-                description_lower = description.lower()
-                if any(keyword in description_lower for keyword in [
-                    'interest paid', 'deposit', 'transfer in', 'e-transfer from', 'interac e-transfer from'
-                ]):
-                    transaction_type = "credit"
-                    is_spending = False
-                elif any(keyword in description_lower for keyword in [
-                    'withdrawal', 'transfer to', 'internet withdrawal', 'fee', 'charge'
-                ]):
-                    transaction_type = "debit"
-                    is_spending = True
-                else:
-                    transaction_type = "credit" if amount > 0 else "debit"
-                    is_spending = amount <= 0
-                
-                return {
-                    'date': date,
-                    'description': description,
-                    'amount': amount,
-                    'balance': balance,
-                    'page': page_num,
-                    'bank': self.bank_name,
-                    'confidence': 0.85,
-                    'transaction_type': transaction_type,
-                    'is_spending': is_spending,
-                    'abs_amount': abs(amount),
-                    'processing_method': 'tangerine_processor',
-                    'confidence_level': 'medium'
-                }, lines_consumed
+            # Get transaction amount and balance (last two amounts)
+            amount = self.clean_amount(amounts[-2])
+            balance = self.clean_amount(amounts[-1])
+            
+            # Build complete text and extract description
+            complete_text = ' '.join(all_text)
+            
+            # Remove date from beginning
+            complete_text = re.sub(r'^\d{2}\s[A-Za-z]{3}\s\d{4}\s*', '', complete_text)
+            
+            # Remove amounts from end
+            for amt in amounts[-2:]:
+                complete_text = complete_text.replace(amt, '', 1)
+            
+            description = complete_text.strip()
+            
+            # Ensure we have meaningful description
+            if not description or len(description) < 3:
+                return None, 1
+            
+            # Skip balance entries
+            if any(skip in description.lower() for skip in ['opening balance', 'closing balance']) and amount == 0:
+                return None, 2
+            
+            # Classify transaction
+            description_lower = description.lower()
+            if any(keyword in description_lower for keyword in [
+                'interest paid', 'deposit', 'transfer in', 'e-transfer from'
+            ]):
+                transaction_type = "credit"
+                is_spending = False
+            else:
+                transaction_type = "debit"
+                is_spending = True
+            
+            return {
+                'date': date,
+                'description': description,
+                'amount': amount,
+                'balance': balance,
+                'page': page_num,
+                'bank': self.bank_name,
+                'confidence': 0.9,
+                'transaction_type': transaction_type,
+                'is_spending': is_spending,
+                'abs_amount': abs(amount),
+                'processing_method': 'tangerine_simple',
+                'confidence_level': 'high'
+            }, 2
             
         except Exception as e:
             pass
@@ -561,48 +540,76 @@ class TangerineProcessor(BankProcessor):
     
     def _is_complete_tangerine_transaction(self, line: str) -> bool:
         """Check if line contains a complete transaction with date, description and amounts"""
-        parts = line.split()
-        if len(parts) < 6:  # Date (3) + desc + 2 amounts minimum
-            return False
-        
-        # Check for date pattern
+        # Must have date pattern at start
         if not re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', line):
             return False
         
-        # Check for at least 2 amounts
-        amounts = [p for p in parts if re.match(r'^[\d,]+\.?\d{2}$', p)]
-        return len(amounts) >= 2
+        # Must have exactly 2 decimal amounts (transaction amount and balance)
+        amounts = re.findall(r'[\d,]+\.\d{2}', line)
+        if len(amounts) < 2:
+            return False
+        
+        # Must have some description text (not just date and amounts)
+        parts = line.split()
+        if len(parts) < 6:  # Date (3) + desc (1+) + amounts (2) minimum
+            return False
+        
+        # Extract everything except date and amounts to check for description
+        date_parts = parts[:3]  # First 3 parts are date
+        remaining_parts = parts[3:]
+        
+        # Count how many parts are amounts vs description
+        desc_parts = [p for p in remaining_parts if not re.match(r'^[\d,]+\.\d{2}$', p)]
+        
+        return len(desc_parts) > 0  # Must have some description
     
     def _parse_tangerine_transaction(self, line: str, page_num: int) -> Optional[Dict[str, Any]]:
-        """Parse Tangerine transaction line with proper classification"""
-        # Pattern: "01 Oct 2021 DESCRIPTION AMOUNT BALANCE"
+        """Parse Tangerine transaction line - clean single-line approach"""
+        # Must start with date pattern: "01 Oct 2021"
+        if not re.match(r'^\d{2}\s[A-Za-z]{3}\s\d{4}', line):
+            return None
+        
+        # Extract date (first 3 words)
         parts = line.split()
-        if len(parts) < 4:
+        if len(parts) < 6:  # Need date + description + 2 amounts minimum
             return None
         
-        # Extract date (first 3 parts) and convert to MM-DD format
-        try:
-            date_str = f"{parts[0]} {parts[1]} {parts[2]}"
-            date = self._parse_tangerine_date(date_str)
-        except:
-            return None
+        date_str = f"{parts[0]} {parts[1]} {parts[2]}"
+        date = self._parse_tangerine_date(date_str)
         
-        # Find amounts (last two numbers)
-        amounts = []
-        description_parts = []
-        
-        for part in parts[3:]:
-            if re.match(r'[\d,]+\.?\d{2}$', part):
-                amounts.append(part)
-            else:
-                description_parts.append(part)
-        
+        # Find all decimal amounts in the line
+        amounts = re.findall(r'[\d,]+\.\d{2}', line)
         if len(amounts) < 2:
             return None
         
-        description = ' '.join(description_parts)
-        amount = self.clean_amount(amounts[0])
-        balance = self.clean_amount(amounts[1])
+        # Get the last two amounts (transaction amount and balance)
+        amount = self.clean_amount(amounts[-2])
+        balance = self.clean_amount(amounts[-1])
+        
+        # Extract description: everything between date and the last two amounts
+        # Use regex to properly extract the middle portion
+        
+        # Pattern: "DD MMM YYYY (DESCRIPTION) AMOUNT.XX BALANCE.XX"
+        # Find the position after the date and before the last two amounts
+        date_pattern = r'^\d{2}\s[A-Za-z]{3}\s\d{4}\s+'
+        date_match = re.search(date_pattern, line)
+        
+        if date_match:
+            # Start after the date
+            start_pos = date_match.end()
+            
+            # Find the last two amounts in the line
+            last_amount = amounts[-1]
+            second_last_amount = amounts[-2]
+            
+            # Find where the second-to-last amount starts
+            second_last_pos = line.rfind(second_last_amount)
+            
+            # Extract everything between date end and second-last amount start
+            description = line[start_pos:second_last_pos].strip()
+        else:
+            # Fallback method
+            description = "Unknown Transaction"
         
         # Skip balance entries that don't represent actual transactions
         if any(skip in description.lower() for skip in ['opening balance', 'closing balance']) and amount == 0:
@@ -624,13 +631,13 @@ class TangerineProcessor(BankProcessor):
             transaction_type = "debit"
             is_spending = True
         else:
-            # Default for savings account: if amount > 0, likely credit
+            # Default for bank/savings account: positive amounts are typically spending (debits)
             if amount > 0:
-                transaction_type = "credit"
-                is_spending = False
-            else:
                 transaction_type = "debit"
                 is_spending = True
+            else:
+                transaction_type = "credit"
+                is_spending = False
         
         return {
             'date': date,
@@ -639,12 +646,12 @@ class TangerineProcessor(BankProcessor):
             'balance': balance,
             'page': page_num,
             'bank': self.bank_name,
-            'confidence': 0.85,
+            'confidence': 0.95,  # Higher confidence for clean single-line parsing
             'transaction_type': transaction_type,
             'is_spending': is_spending,
             'abs_amount': abs(amount),
             'processing_method': 'tangerine_processor',
-            'confidence_level': 'medium'
+            'confidence_level': 'high'
         }
     
     def _parse_tangerine_date(self, date_str: str) -> str:
