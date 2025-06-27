@@ -13,7 +13,7 @@ from smart_document_processor_v2 import SmartDocumentProcessor
 
 # Page Configuration
 st.set_page_config(
-    page_title="Financial Statement Analyzer",
+    page_title="Statement Breakdown Tool",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -433,7 +433,7 @@ def create_header():
     st.markdown("""
     <div class="main-content">
         <div class="page-header">
-            <h1>Financial Statement Analyzer</h1>
+            <h1>Statement Breakdown Tool</h1>
             <p>Professional Canadian bank statement processing and analysis</p>
         </div>
     </div>
@@ -455,11 +455,6 @@ def create_dashboard_cards(transactions_df):
                 <div class="metric-icon green"></div>
                 <div class="metric-value">$0.00</div>
                 <div class="metric-label">Total Spending</div>
-            </div>
-            <div class="metric-card" onclick="document.querySelector('[data-testid=\\"stTabs\\"] button:nth-child(2)').click()">
-                <div class="metric-icon purple"></div>
-                <div class="metric-value">$0.00</div>
-                <div class="metric-label">Monthly Average</div>
             </div>
             <div class="metric-card" onclick="document.querySelector('[data-testid=\\"stTabs\\"] button:nth-child(4)').click()">
                 <div class="metric-icon orange"></div>
@@ -487,26 +482,7 @@ def create_dashboard_cards(transactions_df):
     else:
         total_spending = 0
     
-    # Calculate monthly average
-    if not transactions_df.empty:
-        date_col = None
-        for col in ['date', 'Date', 'transaction_date']:
-            if col in transactions_df.columns:
-                date_col = col
-                break
-        
-        if date_col:
-            try:
-                transactions_df['parsed_date'] = pd.to_datetime(transactions_df[date_col], errors='coerce')
-                transactions_df['month'] = transactions_df['parsed_date'].dt.month
-                unique_months = transactions_df['month'].nunique()
-                monthly_avg = total_spending / max(unique_months, 1)
-            except:
-                monthly_avg = total_spending  # Assume single month if date parsing fails
-        else:
-            monthly_avg = total_spending
-    else:
-        monthly_avg = 0
+
     
     # Count categories
     category_col = None
@@ -529,11 +505,6 @@ def create_dashboard_cards(transactions_df):
             <div class="metric-icon green"></div>
             <div class="metric-value">{format_currency(total_spending)}</div>
             <div class="metric-label">Total Spending</div>
-        </div>
-        <div class="metric-card" onclick="document.querySelector('[data-testid=\\"stTabs\\"] button:nth-child(2)').click()">
-            <div class="metric-icon purple"></div>
-            <div class="metric-value">{format_currency(monthly_avg)}</div>
-            <div class="metric-label">Monthly Average</div>
         </div>
         <div class="metric-card" onclick="document.querySelector('[data-testid=\\"stTabs\\"] button:nth-child(4)').click()">
             <div class="metric-icon orange"></div>
@@ -750,14 +721,6 @@ def create_category_breakdown_table(transactions_df, spending_plan):
     category_stats.columns = ['Total', 'Transactions', 'Average']
     category_stats = category_stats.sort_values('Total', ascending=False)
     
-    # Add budget comparison
-    category_stats['Budget'] = category_stats.index.map(lambda x: spending_plan.get(x, 0))
-    category_stats['Variance'] = category_stats['Total'] - category_stats['Budget']
-    category_stats['% of Budget'] = (category_stats['Total'] / category_stats['Budget'] * 100).round(1)
-    
-    # Replace inf and NaN values
-    category_stats['% of Budget'] = category_stats['% of Budget'].replace([np.inf, -np.inf, np.nan], 0)
-    
     st.markdown("""
     <div class="content-card">
         <div class="card-header">
@@ -775,21 +738,9 @@ def create_category_breakdown_table(transactions_df, spending_plan):
                 "Total Spent",
                 format="$%.2f"
             ),
-            "Budget": st.column_config.NumberColumn(
-                "Budget",
-                format="$%.2f"
-            ),
-            "Variance": st.column_config.NumberColumn(
-                "Variance",
-                format="$%.2f"
-            ),
             "Average": st.column_config.NumberColumn(
                 "Avg per Transaction",
                 format="$%.2f"
-            ),
-            "% of Budget": st.column_config.NumberColumn(
-                "% of Budget",
-                format="%.1f%%"
             )
         }
     )
@@ -1478,7 +1429,7 @@ def show_welcome_screen():
     """Show welcome screen when no data is available"""
     st.markdown("""
     <div class="welcome-section">
-        <div class="welcome-title">Welcome to Financial Statement Analyzer</div>
+        <div class="welcome-title">Welcome to Statement Breakdown Tool</div>
         <div class="welcome-subtitle">Upload your bank statements using the sidebar to get started with professional financial analysis</div>
     </div>
     """, unsafe_allow_html=True)
